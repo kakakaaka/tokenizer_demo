@@ -1,0 +1,70 @@
+{
+  "version": "1.0",
+  "truncation": null,
+  "padding": null,
+  "added_tokens": [
+    {
+      "id": 0,
+      "content": "[PAD]",
+      "special": true
+    },
+    {
+      "id": 1,
+      "content": "[EOS]",
+      "special": true
+    },
+    {
+      "id": 2,
+      "content": "[BOS]",
+      "special": true
+    },
+    {
+      "id": 3,
+      "content": "[user]",
+      "special": true
+    },
+    {
+      "id": 4,
+      "content": "[end]",
+      "special": true
+    },
+    {
+      "id": 5,
+      "content": "[assistant]",
+      "special": true
+    }
+  ],
+  "model": {
+    "type": "BPE",
+    "vocab": {
+      "[PAD]": 0,
+      "[EOS]": 1,
+      "[BOS]": 2,
+      "[user]": 3,
+      "[end]": 4,
+      "[assistant]": 5,
+      "你": 6,
+      "好": 7,
+      "，": 8,
+      "世": 9,
+      "界": 10,
+      "！": 11,
+      "今": 12,
+      "天": 13,
+      "气": 14,
+      "怎": 15,
+      "么": 16,
+      "样": 17,
+      "？": 18,
+      "我": 19,
+      "想": 20,
+      "去": 21,
+      "公": 22,
+      "园": 23,
+      "散": 24,
+      "步": 25,
+      "。": 26
+    },
+    "merges": []
+  }
+}
