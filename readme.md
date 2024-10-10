@@ -1,549 +1,595 @@
-# 代码算法解析
+# MyTokenizer 方法详解
 
-该代码实现了使用 HuggingFace 的 `tokenizers` 库训练自定义的分词器，主要用于自然语言处理（NLP）中的文本预处理。下面将详细介绍该算法的原理、步骤和数据流过程。
-
-## 1. 导入必要的库
-
-```python
-import os
-import pandas as pd
-import tokenizers
-from tokenizers import Tokenizer, decoders
-from tokenizers.models import BPE
-from tokenizers.trainers import BpeTrainer
-from tokenizers.pre_tokenizers import Punctuation, Digits, Metaspace
-from tokenizers.normalizers import NFKC
-from transformers import PreTrainedTokenizerFast
-
-from config import PROJECT_ROOT, DATA_ROOT, TEMP_ROOT
-```
-
-**说明：** 这里导入了操作系统交互、数据处理、分词器模型和训练器，以及用于转换的库。
-
-## 2. 定义辅助函数
-
-### 2.1 检查并创建目录
-
-```python
-def check_dir_exits(dir: str) -> None:
-    '''
-    检查文件夹是否存在，如果不存在则创建文件夹
-    '''
-    if not os.path.exists(dir):
-        os.makedirs(dir)
-```
-
-**功能：** 确保指定的目录存在，如果不存在则自动创建。
-
-## 3. 定义主函数
-
-### 3.1 函数签名
-
-```python
-def train_my_huggingface_wiki_tokenizer(cropus_file: str, max_train_line: int = None, vocab_size: int = 40960, token_type: str = 'char') -> None:
-    '''
-    训练 tokenizer with huggingface
-    '''
-```
-
-**参数说明：**
-
-- `cropus_file`: 语料库文件路径。
-- `max_train_line`: 最大训练行数，默认为 `None`，表示使用全部数据。
-- `vocab_size`: 词汇表大小，默认值为 40960。
-- `token_type`: 分词类型，默认为 `'char'`，可选 `'byte'`。
-
-### 3.2 设置保存路径
-
-```python
-tokenizer_slow_save_path = PROJECT_ROOT + "/tokenizer/"
-tokenizer_fast_save_path = PROJECT_ROOT + "/tokenizer/"
-
-check_dir_exits(PROJECT_ROOT + "/tokenizer/")
-check_dir_exits(tokenizer_fast_save_path)
-```
-
-**说明：** 定义慢速和快速分词器的保存路径，并确保目录存在。
-
-### 3.3 定义训练语料生成器
-
-```python
-def get_training_corpus(buffer_size: int = 1000, chunk_len: int = 2048):
-    '''
-    一个文本块大小2048
-    '''
-    line_cnt = 0
-    buffer = []
-    with open(cropus_file, 'r', encoding='utf-8') as f_read:
-        cur_chunk_txt, txt_len = [], 0
-        for line in f_read:
-            cur_chunk_txt.append(line)
-            txt_len += len(line)
-            line_cnt += 1
-
-            if txt_len >= chunk_len:
-                buffer.append(''.join(cur_chunk_txt))
-                cur_chunk_txt, txt_len = [], 0
-
-            if len(buffer) >= buffer_size:
-                yield buffer
-                buffer = []
-
-            if isinstance(max_train_line, int) and line_cnt > max_train_line:
-                break
-
-        # yield last
-        if len(buffer) > 0:
-            yield buffer
-```
-
-**数据流过程：**
-
-1. **初始化**：设置行计数器 `line_cnt`、缓冲区 `buffer`、当前文本块 `cur_chunk_txt` 和文本长度 `txt_len`。
-2. **读取文件**：逐行读取语料库文件。
-3. **累积文本**：将每行文本加入 `cur_chunk_txt`，并更新 `txt_len`。
-4. **生成文本块**：当 `txt_len` 大于等于 `chunk_len`（2048）时，将当前文本块加入缓冲区。
-5. **生成器输出**：当缓冲区大小达到 `buffer_size`（1000）时，使用 `yield` 返回缓冲区内容。
-6. **控制训练数据量**：如果设置了 `max_train_line`，当读取行数超过该值时，停止读取。
-7. **处理剩余数据**：在文件读取结束后，检查缓冲区是否有剩余数据，若有则输出。
-
-### 3.4 定义特殊符号
-
-```python
-special_tokens = ["[PAD]", "[EOS]", "[BOS]"]
-```
-
-**说明：** 定义在分词过程中需要特殊处理的符号，如填充、句子结束和开始标记。
-
-### 3.5 配置分词器
-
-根据参数 `token_type` 的不同，配置不同的分词器模型。
-
-#### 3.5.1 当 `token_type` 为 `'char'` 时
-
-```python
-if token_type == 'char':
-    model = BPE(unk_token="[UNK]")
-    tokenizer = Tokenizer(model)
-
-    # 用兼容等价分解合并对 UTF 编码进行等价组合，比如全角 A 转换为半角 A
-    tokenizer.normalizer = tokenizers.normalizers.Sequence([NFKC()])
-
-    # 标点符号、数字及 Metaspace 预分割（否则 decode 出来没有空格）
-    tokenizer.pre_tokenizer = tokenizers.pre_tokenizers.Sequence(
-        [Punctuation(), Digits(individual_digits=True), Metaspace()]
-    )
-
-    tokenizer.add_special_tokens(special_tokens)
-    tokenizer.decoder = decoders.Metaspace()
-```
-
-**操作步骤：**
-
-1. **初始化模型**：使用 BPE（Byte-Pair Encoding）模型，并设置未知词标记为 `[UNK]`。
-2. **正则化**：使用 `NFKC` 标准化，将兼容字符转换为标准形式，例如将全角字符转换为半角。
-3. **预分词**：采用 `Punctuation()` 分割标点符号，`Digits(individual_digits=True)` 分割数字，`Metaspace()` 处理空格。
-4. **添加特殊符号**：将之前定义的 `special_tokens` 添加到分词器中。
-5. **设置解码器**：使用 `Metaspace` 解码器，确保在解码过程中正确处理空格。
-
-**数学描述：**
-
-- **Byte-Pair Encoding（BPE）算法：** 通过迭代合并出现频率最高的字符或子词对，构建词汇表。设初始词汇表为所有单字符，算法重复以下步骤：
-  1. 统计词汇表中所有相邻符号对的出现频率。
-  2. 找到出现频率最高的符号对 $(a, b)$。
-  3. 将符号对 $(a, b)$ 合并为新符号 $ab$。
-- **标准化函数 $NFKC$：** 将字符序列标准化为兼容的规范形式，以减少冗余字符表示。
-
-#### 3.5.2 当 `token_type` 为 `'byte'` 时
-
-```python
-elif token_type == 'byte':
-    # Byte BPE 不需要 unk_token
-    model = BPE()
-    tokenizer = Tokenizer(model)
-    tokenizer.pre_tokenizer = tokenizers.pre_tokenizers.ByteLevel(
-        add_prefix_space=False, use_regex=True)
-    tokenizer.add_special_tokens(special_tokens)
-    tokenizer.decoder = decoders.ByteLevel(
-        add_prefix_space=False, use_regex=True)
-    tokenizer.post_processor = tokenizers.processors.ByteLevel(
-        trim_offsets=False)
-```
-
-**操作步骤：**
-
-1. **初始化模型**：使用 BPE 模型，不设置未知词标记。
-2. **预分词**：采用 `ByteLevel` 预分词器，将文本处理为字节级别的表示。
-3. **添加特殊符号**：同样添加 `special_tokens`。
-4. **设置解码器和后处理器**：使用 `ByteLevel` 解码器和后处理器，确保在字节级别正确处理分词和解码。
-
-**数学描述：**
-
-- **字节级 BPE：** 将文本转换为字节序列后，应用 BPE 算法。由于字节空间比字符空间更小，能够处理更多的语言和符号。
-
-#### 3.5.3 参数异常处理
-
-```python
-else:
-    raise Exception(
-        f'token type must be `char` or `byte`, but got {token_type}')
-```
-
-**说明：** 如果传入的 `token_type` 不是 `'char'` 或 `'byte'`，则抛出异常。
-
-### 3.6 训练分词器
-
-```python
-trainer = BpeTrainer(vocab_size=vocab_size-2, min_frequency=100,
-                     show_progress=True, special_tokens=special_tokens)
-tokenizer.train_from_iterator(get_training_corpus(), trainer=trainer)
-```
-
-**操作步骤：**
-
-1. **配置训练器 `BpeTrainer`：**
-
-   - **`vocab_size`**：词汇表大小，实际为 `vocab_size - 2`，因为稍后会添加 `\t` 和 `\n`。
-   - **`min_frequency`**：最小词频，低于此频率的子词将被忽略。
-   - **`special_tokens`**：特殊符号列表。
-
-2. **开始训练：** 使用之前定义的 `get_training_corpus()` 生成器作为数据源，训练分词器。
-
-**数据流过程：**
-
-- **输入数据**：由生成器提供的文本块。
-- **分词过程**：
-
-  1. **预处理**：对文本块进行正则化和预分词。
-  2. **统计子词频率**：计算所有可能子词的出现频率。
-  3. **构建词汇表**：根据频率和 `min_frequency` 筛选子词，构建词汇表。
-
-**数学描述：**
-
-- **目标函数**：最大化训练语料的似然函数，找到最优的子词组合。
-- **损失函数**：对于给定的参数 $\theta$，最小化负对数似然：
-  $$ \mathcal{L}(\theta) = -\sum_{i=1}^{N} \log P(w_i | \theta) $$
-
-### 3.7 添加特殊字符
-
-```python
-# 添加 \t 和 \n
-if '\t' not in tokenizer.get_vocab():
-    tokenizer.add_tokens(['\t'])
-if '\n' not in tokenizer.get_vocab():
-    tokenizer.add_tokens(['\n'])
-```
-
-**说明：** 检查词汇表中是否包含制表符和换行符，如果没有，则添加。这是为了确保分词器能正确处理这些特殊字符。
-
-### 3.8 保存分词器
-
-```python
-tokenizer.save(tokenizer_slow_save_path)
-```
-
-**说明：** 将训练好的分词器保存到指定路径。
-
-### 3.9 转换并保存快速分词器
-
-```python
-# 将训练的 tokenizer 转换为 PreTrainedTokenizerFast 并保存
-slow_tokenizer = tokenizer
-fast_tokenizer = PreTrainedTokenizerFast(
-    tokenizer_object=slow_tokenizer,
-    pad_token="[PAD]",
-    bos_token='[BOS]',
-    eos_token='[EOS]',
-)
-
-fast_tokenizer.save_pretrained(tokenizer_fast_save_path)
-```
-
-**操作步骤：**
-
-1. **转换分词器**：将慢速的 `Tokenizer` 对象转换为 `PreTrainedTokenizerFast`，以便与 HuggingFace 的其他组件兼容。
-2. **指定特殊符号**：在转换过程中，明确指定填充、句子开始和结束符号。
-3. **保存分词器**：将转换后的快速分词器保存到指定路径。
-
-**说明：** 这样做的目的是为了方便在后续的模型训练和推理中使用分词器。
-
-### 3.10 打印完成信息
-
-```python
-print(f'slow tokenizer save in path: {tokenizer_slow_save_path}')
-print(f'fast tokenizer save in path: {tokenizer_fast_save_path}')
-
-print(
-    f"\ntrain tokenizer finished. you can use `AutoTokenizer.from_pretrained('{tokenizer_fast_save_path}')` to load and test your tokenizer.")
-```
-
-**说明：** 提示用户分词器已保存，并给出加载和测试分词器的方法。
-
-## 4. 主程序入口
-
-```python
-if __name__ == '__main__':
-    data_path = DATA_ROOT + 'tokenizer_wiki.txt'
-    vocab_size = 32000
-    train_my_huggingface_wiki_tokenizer(data_path, vocab_size=vocab_size, token_type='byte')
-```
-
-**操作步骤：**
-
-1. **设置数据路径**：指定训练语料库文件的路径。
-2. **设置词汇表大小**：这里设置为 32000。
-3. **调用训练函数**：使用 `'byte'` 类型训练分词器。
+以下将详细介绍 `MyTokenizer` 类中的关键方法，包括 `__call__`、`decode`、`add_special_tokens` 和 `from_pretrained`。将结合数学语言和直观的操作步骤，详细描述每个方法的算法和数据流程。
 
 ---
 
-**总结：** 该代码通过定义一系列函数，实现了从语料库中读取文本数据，预处理和分词，并最终训练出一个自定义的分词器。该分词器可以处理字符级或字节级的分词，适用于不同的应用场景。
+## **1. `__call__` 方法**
+
+### **方法概述**
+
+`__call__` 方法用于将输入的文本或文本列表编码为模型可接受的格式。主要完成以下功能：
+
+- **分词**：将文本拆分为词元（tokens）。
+- **映射**：将词元转换为对应的词汇表ID（token IDs）。
+- **截断**：根据指定的最大长度截断序列。
+- **填充**：对序列进行填充以达到统一的长度。
+- **生成注意力掩码**：标识实际词元和填充词元的位置。
+- **生成偏移映射**：记录每个词元在原始文本中的位置。
+- **生成特殊标记掩码**：标识特殊标记在序列中的位置。
+
+### **详细步骤**
+
+1. **输入处理**
+
+   - **单个文本处理**：如果输入是字符串 `texts`，则将其转换为包含一个元素的列表。
+
+     ```python
+     if isinstance(texts, str):
+         texts = [texts]
+     ```
+
+2. **初始化结果字典**
+
+   - 创建一个字典 `encoded_batch`，用于存储编码结果。
+
+     ```python
+     encoded_batch = {
+         'input_ids': [],
+         'attention_mask': [],
+         'offset_mapping': [],
+         'special_tokens_mask': []
+     }
+     ```
+
+3. **遍历输入文本列表**
+
+   - 对于每个文本 `text`，执行以下步骤：
+
+     ```python
+     for text in texts:
+         # 后续步骤
+     ```
+
+4. **分词**
+
+   - 调用 `tokenize` 方法，将文本拆分为词元列表 `tokens`。
+
+     ```python
+     tokens = self.tokenize(text)
+     ```
+
+   - **示例**：对于文本 `"你好，世界！"`，分词结果为：
+
+     ```
+     tokens = ['你', '好', '，', '世', '界', '！']
+     ```
+
+5. **词元转换为ID**
+
+   - 调用 `convert_tokens_to_ids` 方法，将词元列表转换为对应的ID列表 `token_ids`。
+
+     ```python
+     token_ids = self.convert_tokens_to_ids(tokens)
+     ```
+
+   - **映射关系**：使用词汇表 `self.vocab`。
+
+     - 数学表示：
+
+       $$
+       \text{token\_ids}[i] = \text{self.vocab.get}(\text{tokens}[i], \text{self.vocab.get}('[UNK]', 0))
+       $$
+
+   - **示例**：假设词汇表中 `'你'` 的ID为6，`'好'` 的ID为7，则：
+
+     ```
+     token_ids = [6, 7, 8, 9, 10, 11]
+     ```
+
+6. **截断**
+
+   - 如果 `truncation=True` 且 `token_ids` 长度超过 `max_length`，则截断。
+
+     ```python
+     if truncation and len(token_ids) > max_length:
+         token_ids = token_ids[:max_length]
+     ```
+
+   - **数学表示**：
+
+     $$
+     \text{token\_ids} = \text{token\_ids}[: \text{max\_length}]
+     $$
+
+7. **生成注意力掩码**
+
+   - 创建一个与 `token_ids` 长度相同的列表 `attention_mask`，其中有效词元位置为1。
+
+     ```python
+     attention_mask = [1] * len(token_ids)
+     ```
+
+   - **数学表示**：
+
+     $$
+     \text{attention\_mask}[i] = 1, \quad \forall i \in [0, \text{len}(\text{token\_ids}) - 1]
+     $$
+
+8. **填充**
+
+   - 如果 `padding='max_length'`，则对 `token_ids` 和 `attention_mask` 进行填充。
+
+     ```python
+     if padding == 'max_length':
+         padding_length = max_length - len(token_ids)
+         token_ids += [self.vocab.get(self.pad_token)] * padding_length
+         attention_mask += [0] * padding_length
+     ```
+
+   - **计算填充长度**：
+
+     $$
+     \text{padding\_length} = \text{max\_length} - \text{len}(\text{token\_ids})
+     $$
+
+   - **填充 `token_ids` 和 `attention_mask`**：
+
+     $$
+     \text{token\_ids} = \text{token\_ids} + [\text{PAD\_ID}] \times \text{padding\_length}
+     $$
+
+     $$
+     \text{attention\_mask} = \text{attention\_mask} + [0] \times \text{padding\_length}
+     $$
+
+   - **示例**：如果 `max_length=10`，原始 `token_ids` 长度为6，则需要填充4个 `[PAD]`。
+
+9. **生成偏移映射**
+
+   - 如果 `return_offsets_mapping=True`，则计算每个词元在原始文本中的起止位置。
+
+     ```python
+     if return_offsets_mapping:
+         offsets = []
+         current_position = 0
+         for token in tokens:
+             token_length = len(token)
+             offsets.append((current_position, current_position + token_length))
+             current_position += token_length
+         if padding == 'max_length':
+             offsets += [(0, 0)] * (max_length - len(offsets))
+     else:
+         offsets = None
+     ```
+
+   - **计算过程**：
+
+     - 初始化 `current_position = 0`。
+
+     - 对于每个词元 `token`：
+
+       - 计算 `token_length = len(token)`。
+
+       - 偏移量为 `(current_position, current_position + token_length)`。
+
+       - 更新 `current_position += token_length`。
+
+   - **数学表示**：
+
+     $$
+     \text{offsets}[i] = (\sum_{k=0}^{i-1} \text{len}(\text{tokens}[k]), \sum_{k=0}^{i} \text{len}(\text{tokens}[k]))
+     $$
+
+   - **示例**：对于 `tokens = ['你', '好', '，', '世', '界', '！']`，偏移映射为：
+
+     ```
+     offsets = [(0,1), (1,2), (2,3), (3,4), (4,5), (5,6)]
+     ```
+
+   - **填充偏移映射**：如果需要填充，则在 `offsets` 后添加 `(0, 0)`。
+
+10. **生成特殊标记掩码**
+
+    - 如果 `return_special_tokens_mask=True`，则生成特殊标记掩码 `special_tokens_mask`。
+
+      ```python
+      if return_special_tokens_mask:
+          special_tokens_mask = [1 if self.id_to_token.get(id_) in self.special_tokens else 0 for id_ in token_ids]
+      else:
+          special_tokens_mask = None
+      ```
+
+    - **计算过程**：
+
+      - 对于每个 `id_`：
+
+        - 如果 `id_` 对应的词元在 `self.special_tokens` 中，则标记为1，否则为0。
+
+    - **数学表示**：
+
+      $$
+      \text{special\_tokens\_mask}[i] = \begin{cases}
+      1, & \text{if } \text{id\_to\_token}(\text{token\_ids}[i]) \in \text{special\_tokens} \\
+      0, & \text{otherwise}
+      \end{cases}
+      $$
+
+    - **示例**：如果 `token_ids` 包含 `[PAD]` 的ID，则对应位置为1。
+
+11. **结果收集**
+
+    - 将计算得到的各项添加到 `encoded_batch` 中。
+
+      ```python
+      encoded_batch['input_ids'].append(token_ids)
+      encoded_batch['attention_mask'].append(attention_mask)
+      if offsets is not None:
+          encoded_batch['offset_mapping'].append(offsets)
+      if special_tokens_mask is not None:
+          encoded_batch['special_tokens_mask'].append(special_tokens_mask)
+      ```
+
+12. **返回结果**
+
+    - 返回包含所有编码信息的 `encoded_batch`。
+
+      ```python
+      return encoded_batch
+      ```
+
+### **数据流程示例**
+
+- **输入**：`texts = ["你好，世界！"]`，`max_length = 10`，`padding = 'max_length'`。
+
+- **步骤概览**：
+
+  1. **分词**：`tokens = ['你', '好', '，', '世', '界', '！']`
+  2. **映射为ID**：`token_ids = [6, 7, 8, 9, 10, 11]`
+  3. **截断**：长度未超过 `max_length`，无需截断。
+  4. **注意力掩码**：`attention_mask = [1, 1, 1, 1, 1, 1]`
+  5. **填充**：填充 `[PAD]` 的ID，假设 `[PAD]` 的ID为0。
+
+     ```
+     padding_length = 10 - 6 = 4
+     token_ids += [0, 0, 0, 0]
+     attention_mask += [0, 0, 0, 0]
+     ```
+
+     最终 `token_ids = [6, 7, 8, 9, 10, 11, 0, 0, 0, 0]`
+
+  6. **偏移映射**：
+
+     ```
+     offsets = [(0,1), (1,2), (2,3), (3,4), (4,5), (5,6), (0,0), (0,0), (0,0), (0,0)]
+     ```
+
+  7. **特殊标记掩码**：
+
+     ```
+     special_tokens_mask = [0, 0, 0, 0, 0, 0, 1, 1, 1, 1]
+     ```
+
+- **输出**：
+
+  ```python
+  {
+      'input_ids': [[6, 7, 8, 9, 10, 11, 0, 0, 0, 0]],
+      'attention_mask': [[1, 1, 1, 1, 1, 1, 0, 0, 0, 0]],
+      'offset_mapping': [[(0,1), (1,2), (2,3), (3,4), (4,5), (5,6), (0,0), (0,0), (0,0), (0,0)]],
+      'special_tokens_mask': [[0, 0, 0, 0, 0, 0, 1, 1, 1, 1]]
+  }
+  ```
 
 ---
-# 深入解析代码中的关键技术细节
 
-在上一部分中，我们详细介绍了代码的主要流程和核心算法。接下来，我们将深入探讨代码中的关键技术细节，以帮助更好地理解整个过程。
+## **2. `decode` 方法**
 
-## 1. 正则化和预处理的重要性
+### **方法概述**
 
-### 1.1 正则化（Normalization）
+`decode` 方法用于将ID序列转换回原始文本。主要完成以下功能：
 
-在自然语言处理中，正则化是将文本转换为标准形式的过程，以减少噪声和变体。代码中使用了 `NFKC` 正则化：
+- **ID到词元的映射**：将ID列表转换为词元列表。
+- **拼接词元**：将词元列表拼接成字符串。
+- **移除特殊标记**：从生成的文本中移除特殊标记。
+- **返回结果**：返回去除特殊标记后的文本。
 
-```python
-tokenizer.normalizer = tokenizers.normalizers.Sequence([NFKC()])
-```
+### **详细步骤**
 
-**NFKC（Normalization Form Compatibility Composition）**：
+1. **输入处理**
 
-- **作用**：将文本中的兼容字符转换为其标准等价形式。
-- **示例**：
+   - 如果 `ids` 的第一个元素是列表，则取第一个列表。
 
-  - 全角字符和半角字符的转换。
-  - 将拉丁字母中的不同变体统一。
+     ```python
+     if isinstance(ids[0], list):
+         ids = ids[0]
+     ```
 
-**数学表达**：
+2. **ID转换为词元**
 
-给定一个字符序列 $S$，NFKC 正则化函数 $f_{\text{NFKC}}$ 将其映射为标准形式：
+   - 调用 `convert_ids_to_tokens` 方法，将ID列表转换为词元列表 `tokens`。
 
-$$
-S' = f_{\text{NFKC}}(S)
-$$
+     ```python
+     tokens = self.convert_ids_to_tokens(ids)
+     ```
 
-**重要性**：
+   - **映射关系**：使用 `self.id_to_token`。
 
-- **统一表示**：消除文本中的字符变体，确保相同的字符具有相同的表示。
-- **减少冗余**：降低词汇表的复杂度，避免同义词或等价字符的重复。
+     - 数学表示：
 
-### 1.2 预处理（Pre-tokenization）
+       $$
+       \text{tokens}[i] = \text{self.id\_to\_token.get}(\text{ids}[i], '[UNK]')
+       $$
 
-预处理阶段将文本划分为更小的单元，以便于后续的分词和编码。代码中使用了以下预分词器：
+3. **拼接词元**
 
-```python
-tokenizer.pre_tokenizer = tokenizers.pre_tokenizers.Sequence(
-    [Punctuation(), Digits(individual_digits=True), Metaspace()]
-)
-```
+   - 将词元列表拼接成字符串 `text`。
 
-**组件说明**：
+     ```python
+     text = ''.join(tokens)
+     ```
 
-- **Punctuation()**：按照标点符号进行分割。
-- **Digits(individual_digits=True)**：将数字单独分割，每个数字作为一个独立的符号。
-- **Metaspace()**：处理空格，确保在解码时保留空格信息。
+4. **移除特殊标记**
 
-**数据流过程**：
+   - 遍历 `self.special_tokens`，将文本中的特殊标记替换为空字符串。
 
-1. **输入文本**：`"这是一个测试。12345"`
-2. **标点分割**：`["这是一个测试", "。", "12345"]`
-3. **数字分割**：`["这是一个测试", "。", "1", "2", "3", "4", "5"]`
-4. **空格处理**：在必要的位置添加特殊的空格符号。
+     ```python
+     for token in self.special_tokens:
+         text = text.replace(token, '')
+     ```
 
-**重要性**：
+5. **去除首尾空格并返回**
 
-- **提高分词效果**：将文本预处理为合理的子单元，有助于分词器学习常见的词汇和模式。
-- **保留语义信息**：通过正确处理标点和数字，避免重要信息的丢失。
+   - 使用 `strip()` 方法去除首尾空格。
 
-## 2. BPE 算法的理论基础
+     ```python
+     return text.strip()
+     ```
 
-### 2.1 什么是 BPE（Byte-Pair Encoding）
+### **数据流程示例**
 
-BPE 是一种用于文本数据的压缩算法，后来被用于构建子词级别的词汇表，以解决 OOV（Out-Of-Vocabulary）问题。
+- **输入**：`ids = [6, 7, 8, 9, 10, 11, 0, 0, 0, 0]`（对应之前编码的 `input_ids`）。
 
-**基本思想**：
+- **步骤概览**：
 
-- **迭代合并**：从字符级别开始，迭代地合并最频繁的符号对（可能是字符或子词）。
-- **构建词汇表**：根据合并的结果，逐步建立起包含高频子词的词汇表。
+  1. **ID转换为词元**：
 
-### 2.2 算法步骤
+     ```
+     tokens = ['你', '好', '，', '世', '界', '！', '[PAD]', '[PAD]', '[PAD]', '[PAD]']
+     ```
 
-1. **初始化词汇表**：包含所有单字符，设为初始词汇表 $V$。
-2. **统计符号对频率**：对于当前的词汇表，统计所有相邻符号对的出现频率。
-3. **选择最高频符号对**：找到出现次数最多的符号对 $(a, b)$。
-4. **合并符号对**：将符号对 $(a, b)$ 合并为新符号 $ab$，并更新词汇表 $V = V \cup \{ab\}$。
-5. **重复步骤 2-4**：直到达到预定的词汇表大小或不再有符号对可合并。
+  2. **拼接词元**：
 
-### 2.3 数学描述
+     ```
+     text = '你好，世界！[PAD][PAD][PAD][PAD]'
+     ```
 
-- **给定**：初始词汇表 $V_0$，包含所有单字符。
-- **目标**：构建最终词汇表 $V_n$，使其大小为预设的 $K$。
-- **过程**：
+  3. **移除特殊标记**：
 
-  对于每次迭代 $t$：
+     - 移除 `[PAD]`：
 
-  - 统计当前词汇表中所有符号对的频率 $f_t(a, b)$。
-  - 选择频率最高的符号对 $(a^*, b^*)$：
-    $$
-    (a^*, b^*) = \arg\max_{(a, b)} f_t(a, b)
-    $$
-  - 更新词汇表：
-    $$
-    V_{t+1} = V_t \cup \{ a^*b^* \}
-    $$
+       ```
+       text = '你好，世界！'
+       ```
 
-- **终止条件**：当 $|V_t| = K$，或者没有符号对可以合并时，停止迭代。
+  4. **去除首尾空格**：
 
-### 2.4 优点
+     ```
+     text = '你好，世界！'
+     ```
 
-- **解决 OOV 问题**：通过使用子词表示，减少未知词的出现。
-- **平衡词汇量和表示能力**：控制词汇表大小，同时保留高频词汇。
-
-## 3. 特殊符号在 NLP 任务中的作用
-
-### 3.1 特殊符号的定义
-
-代码中定义了以下特殊符号：
-
-```python
-special_tokens = ["[PAD]", "[EOS]", "[BOS]"]
-```
-
-- **[PAD]**：填充符号，用于对齐批次中的序列长度。
-- **[EOS]**：句子结束符，表示一个句子的结束。
-- **[BOS]**：句子开始符，表示一个句子的开始。
-
-### 3.2 作用和重要性
-
-- **[PAD]（Padding）**：
-
-  - **用途**：在处理变长序列时，为了形成统一的批次，需要将序列填充到相同的长度。
-  - **示例**：`["这是一个测试", "[PAD]", "[PAD]"]`
-
-- **[EOS]（End of Sentence）**：
-
-  - **用途**：指示句子的结束，特别是在生成任务中，如机器翻译或文本生成。
-  - **示例**：`"这是一个测试 [EOS]"`
-
-- **[BOS]（Beginning of Sentence）**：
-
-  - **用途**：指示句子的开始，有助于模型了解输入的起始位置。
-  - **示例**：`"[BOS] 这是一个测试"`
-
-### 3.3 在模型训练中的作用
-
-- **提高模型性能**：明确的句子边界信息可以帮助模型更好地学习句子结构和语义。
-- **处理特殊情况**：在序列到序列（Seq2Seq）模型中，特殊符号用于控制解码过程。
-
-## 4. 使用训练好的分词器进行文本处理
-
-### 4.1 加载分词器
-
-代码提示了如何加载训练好的分词器：
-
-```python
-from transformers import AutoTokenizer
-
-tokenizer = AutoTokenizer.from_pretrained('your_tokenizer_path')
-```
-
-### 4.2 文本编码与解码
-
-**编码**：将文本转换为模型可接受的数字序列。
-
-```python
-text = "这是一个测试。"
-encoded = tokenizer.encode(text)
-print(encoded)
-```
-
-**解码**：将数字序列还原为文本。
-
-```python
-decoded = tokenizer.decode(encoded)
-print(decoded)
-```
-
-### 4.3 注意事项
-
-- **特殊符号处理**：确保在编码和解码时正确处理特殊符号。
-- **序列长度**：在批处理时，需要对序列进行填充或截断。
-
-### 4.4 应用场景
-
-- **文本分类**：将文本编码为向量，输入到分类模型中。
-- **文本生成**：使用分词器解码模型生成的输出，得到可读的文本。
-- **机器翻译**：在源语言和目标语言间进行编码和解码。
-
-## 5. 代码优化与扩展
-
-### 5.1 参数调整
-
-- **`vocab_size`**：根据实际需求调整词汇表大小。较大的词汇表可以捕获更多的词汇，但可能增加模型复杂度。
-- **`min_frequency`**：调整最小词频，过滤掉低频词，减少噪声。
-
-### 5.2 支持多语言
-
-- **扩展语料库**：将语料库扩展到多语言文本，训练多语言分词器。
-- **处理特殊字符**：在预处理时，增加对不同语言特殊字符的处理。
-
-### 5.3 集成到模型训练中
-
-- **与 HuggingFace Transformers 集成**：训练好的分词器可以直接与 Transformers 库中的模型结合，进行下游任务的训练。
-
-## 6. 总结
-
-通过以上解析，我们深入了解了代码中涉及的关键技术和算法，包括正则化、预处理、BPE 算法以及特殊符号的作用。训练一个高质量的分词器是 NLP 任务中至关重要的一步，它直接影响到模型的输入质量和最终性能。
+- **输出**：返回字符串 `'你好，世界！'`
 
 ---
 
-# 参考资料
+## **3. `add_special_tokens` 方法**
 
-- **Byte-Pair Encoding**：Sennrich, Rico, et al. "Neural Machine Translation of Rare Words with Subword Units." *arXiv preprint arXiv:1508.07909* (2015).
-- **Unicode Normalization Forms**：Unicode Standard Annex #15.
+### **方法概述**
+
+`add_special_tokens` 方法用于向分词器中添加新的特殊标记。主要完成以下功能：
+
+- **更新词汇表**：将新的特殊标记添加到词汇表中。
+- **更新ID映射**：在 `id_to_token` 中添加新的ID到标记的映射。
+- **更新特殊标记列表**：在 `special_tokens` 中添加新的特殊标记。
+- **更新特殊标记映射**：在 `special_tokens_map` 中更新特殊标记的键值对。
+
+### **详细步骤**
+
+1. **遍历特殊标记字典**
+
+   - 对于 `special_tokens_dict` 中的每个键值对 `key`, `value`，执行以下操作：
+
+     ```python
+     for key, value in special_tokens_dict.items():
+         # 后续步骤
+     ```
+
+2. **处理值为列表的情况**
+
+   - 如果 `value` 是列表，表示有多个特殊标记需要添加。
+
+     ```python
+     if isinstance(value, list):
+         for token in value:
+             # 添加单个标记
+     ```
+
+3. **添加单个特殊标记**
+
+   - 检查标记是否不在词汇表中，如果不在则添加。
+
+     ```python
+     if token not in self.vocab:
+         index = len(self.vocab)
+         self.vocab[token] = index
+         self.id_to_token[index] = token
+         self.special_tokens.append(token)
+     ```
+
+   - **更新词汇表和ID映射**：
+
+     - 将新的标记添加到 `self.vocab`，ID为当前词汇表长度。
+
+     - 在 `self.id_to_token` 中添加新的ID到标记的映射。
+
+   - **更新特殊标记列表**：
+
+     - 将新的标记添加到 `self.special_tokens`。
+
+4. **处理值为单个标记的情况**
+
+   - 如果 `value` 不是列表，直接处理单个标记。
+
+     ```python
+     else:
+         if value not in self.vocab:
+             index = len(self.vocab)
+             self.vocab[value] = index
+             self.id_to_token[index] = value
+             self.special_tokens.append(value)
+     ```
+
+5. **更新特殊标记映射**
+
+   - 在 `self.special_tokens_map` 中更新对应的键值对。
+
+     ```python
+     self.special_tokens_map[key] = value
+     ```
+
+### **数据流程示例**
+
+- **输入**：`special_tokens_dict = {'additional_special_tokens': ['[NEW_TOKEN]']}`
+
+- **步骤概览**：
+
+  1. **遍历字典**：
+
+     - `key = 'additional_special_tokens'`
+     - `value = ['[NEW_TOKEN]']`
+
+  2. **值为列表，遍历列表**：
+
+     - `token = '[NEW_TOKEN]'`
+
+  3. **检查并添加标记**：
+
+     - 如果 `'[NEW_TOKEN]'` 不在 `self.vocab`，则：
+
+       - `index = len(self.vocab)`
+
+       - 添加到 `self.vocab`：
+
+         ```
+         self.vocab['[NEW_TOKEN]'] = index
+         ```
+
+       - 添加到 `self.id_to_token`：
+
+         ```
+         self.id_to_token[index] = '[NEW_TOKEN]'
+         ```
+
+       - 添加到 `self.special_tokens`：
+
+         ```
+         self.special_tokens.append('[NEW_TOKEN]')
+         ```
+
+  4. **更新特殊标记映射**：
+
+     ```
+     self.special_tokens_map['additional_special_tokens'] = ['[NEW_TOKEN]']
+     ```
+
+- **结果**：
+
+  - 词汇表 `self.vocab` 新增 `'[NEW_TOKEN]'`。
+
+  - ID映射 `self.id_to_token` 新增对应关系。
+
+  - 特殊标记列表 `self.special_tokens` 新增 `'[NEW_TOKEN]'`。
 
 ---
 
-# 附录：代码完整性检查
+## **4. `from_pretrained` 方法**
 
-在实际使用中，确保代码的完整性和正确性非常重要。以下是对代码的检查和可能的改进建议。
+### **方法概述**
 
-### 6.1 文件路径的兼容性
+`from_pretrained` 是一个类方法，用于从预训练的分词器文件中加载分词器。主要完成以下功能：
 
-确保在不同操作系统下，文件路径的分隔符是兼容的。可以使用 `os.path.join()`：
+- **加载 `tokenizer.json`**：获取词汇表、合并规则和添加的标记。
+- **加载 `special_tokens_map.json`**：获取特殊标记的映射。
+- **实例化 `MyTokenizer` 对象**：使用加载的数据创建分词器实例。
 
-```python
-tokenizer_slow_save_path = os.path.join(PROJECT_ROOT, "tokenizer")
-tokenizer_fast_save_path = os.path.join(PROJECT_ROOT, "tokenizer")
-```
+### **详细步骤**
 
-### 6.2 异常处理
+1. **加载 `tokenizer.json` 文件**
 
-在读取文件和训练过程中，增加异常处理以捕获可能的错误：
+   - 构建文件路径，打开并读取文件内容。
 
-```python
-try:
-    with open(cropus_file, 'r', encoding='utf-8') as f_read:
-        # 文件读取操作
-except FileNotFoundError:
-    print(f"File not found: {cropus_file}")
-    return
-```
+     ```python
+     with open(os.path.join(path, 'tokenizer.json'), 'r', encoding='utf-8') as f:
+         tokenizer_json = json.load(f)
+     ```
 
-### 6.3 日志记录
+   - **获取数据**：
 
-使用 `logging` 模块记录训练过程中的重要信息，便于调试和追踪：
+     - 词汇表：
 
-```python
-import logging
+       ```python
+       vocab = tokenizer_json['model']['vocab']
+       ```
 
-logging.basicConfig(level=logging.INFO)
-logging.info("Starting tokenizer training...")
-```
+     - 合并规则：
+
+       ```python
+       merges = tokenizer_json['model']['merges']
+       ```
+
+     - 添加的标记：
+
+       ```python
+       added_tokens = tokenizer_json['added_tokens']
+       ```
+
+2. **加载 `special_tokens_map.json` 文件**
+
+   - 构建文件路径，打开并读取文件内容。
+
+     ```python
+     with open(os.path.join(path, 'special_tokens_map.json'), 'r', encoding='utf-8') as f:
+         special_tokens_map = json.load(f)
+     ```
+
+3. **实例化 `MyTokenizer` 对象**
+
+   - 使用加载的数据，调用类的构造方法创建实例。
+
+     ```python
+     return cls(vocab, merges, added_tokens, special_tokens_map)
+     ```
+
+### **数据流程**
+
+- **输入**：分词器文件所在的路径 `path`。
+
+- **步骤概览**：
+
+  1. **读取 `tokenizer.json`**：
+
+     - 获取词汇表 `vocab`。
+
+     - 获取合并规则 `merges`。
+
+     - 获取添加的标记 `added_tokens`。
+
+  2. **读取 `special_tokens_map.json`**：
+
+     - 获取特殊标记映射 `special_tokens_map`。
+
+  3. **实例化对象**：
+
+     - 调用 `__init__` 方法，创建 `MyTokenizer` 实例。
+
+- **输出**：返回一个初始化完毕的 `MyTokenizer` 对象。。
